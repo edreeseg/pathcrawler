@@ -7,7 +7,7 @@ use std::{thread, time};
 enum PageType {
     Race,
     Class,
-    ClassSpell,
+    _ClassSpell,
     Spell,
     Feat,
     Skill,

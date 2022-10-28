@@ -1,4 +1,5 @@
 use reqwest::Url;
+use scraper::element_ref::Text;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::io::Error as IoErr;
@@ -58,16 +59,21 @@ pub fn fetch_url(client: &reqwest::blocking::Client, url: &str) -> CrawlerResult
 
 // }
 
+fn parse_spell_metadata(mut iter: Text) -> () {
+    while let Some(text_value) = iter.next() {
+        println!("Metadata: {}", text_value);
+    }
+    ()
+}
+
 pub fn parse_spell(html: &str) -> () {
     let document = Html::parse_fragment(html);
-    let selector = Selector::parse("#article-content > h1").expect("Basic child boi");
-    document.select(&selector).take(1).for_each(|node| {
-        let spell_name = node.text().next();
-        if let Some(name) = spell_name {
-            println!("{}", name);
-        }
-    });
-
+    let name_selector = Selector::parse("#article-content > h1").expect("Basic child boi");
+    let spell_name = document.select(&name_selector).next().unwrap().text().next().unwrap();
+    println!("Spell Name: {}", spell_name);
+    let spell_metadata_selector = Selector::parse("#article-content > p:first-of-type").unwrap();
+    parse_spell_metadata(document.select(&spell_metadata_selector).next().unwrap().text());
+    // let (spell_school, spell_subschool, spell_descriptors) = parse_spell_metadata(document.select(&spell_metadata_selector).next()?.text());
     // let document = Document::from(html);
     // let spell_name = document
     //     .find(Child(Class("article-content"), Name("h1")))
