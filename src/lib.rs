@@ -1,29 +1,91 @@
 use reqwest::Url;
-use select::document::Document;
-use select::predicate::{And, Class, Descendant, Name, Not, Or};
+use scraper::{Html, Selector};
 use std::collections::HashSet;
+use std::io::Error as IoErr;
 use std::io::Read;
 use std::path::Path;
 
-pub fn fetch_url(client: &reqwest::blocking::Client, url: &str) -> String {
-    let mut res = client.get(url).send().unwrap();
+#[derive(Debug)]
+pub enum Error {
+    IO { url: String, e: IoErr },
+    Fetch { url: String, e: reqwest::Error },
+}
+
+pub type CrawlerResult<T> = std::result::Result<T, Error>;
+
+impl<S: AsRef<str>> From<(S, IoErr)> for Error {
+    fn from((url, e): (S, IoErr)) -> Self {
+        Error::IO {
+            url: url.as_ref().to_string(),
+            e: e,
+        }
+    }
+}
+
+impl<S: AsRef<str>> From<(S, reqwest::Error)> for Error {
+    fn from((url, e): (S, reqwest::Error)) -> Self {
+        Error::Fetch {
+            url: url.as_ref().to_string(),
+            e: e,
+        }
+    }
+}
+
+pub fn fetch_url(client: &reqwest::blocking::Client, url: &str) -> CrawlerResult<String> {
+    let mut res = client.get(url).send().map_err(|e| Error::Fetch {
+        url: url.to_string(),
+        e,
+    })?;
     // println!("Status for {}: {}", url, res.status());
 
     let mut body = String::new();
-    res.read_to_string(&mut body).unwrap();
-    body
+    res.read_to_string(&mut body).map_err(|e| Error::IO {
+        url: url.to_string(),
+        e,
+    })?;
+    Ok(body)
+}
+
+// struct Spell {
+//     name: &str,
+//     description: &str,
+//     school: &str,
+//     subschool: &str,
+//     descriptors: Vec<&str>,
+// }
+
+// pub fn parse_class_spells() -> Vec<Spell> {
+
+// }
+
+pub fn parse_spell(html: &str) -> () {
+    let document = Html::parse_fragment(html);
+    let selector = Selector::parse("#article-content > h1").expect("Basic child boi");
+    document.select(&selector).take(1).for_each(|node| {
+        let spell_name = node.text().next();
+        if let Some(name) = spell_name {
+            println!("{}", name);
+        }
+    });
+
+    // let document = Document::from(html);
+    // let spell_name = document
+    //     .find(Child(Class("article-content"), Name("h1")))
+    //     .into_selection()
+    //     .first();
+
+    // if let Some(name) = spell_name {
+    //     println!("Spell name: {}", name.text());
+    // }
+    ()
 }
 
 pub fn get_links_from_html(html: &str) -> HashSet<String> {
-    Document::from(html)
-        .find(And(
-            Name("a"),
-            Not(Descendant(
-                Or(Name("nav"), Or(Class("footer-nav"), Name("footer"))),
-                Name("a"),
-            )),
-        ))
-        .filter_map(|n| n.attr("href"))
+    let document = Html::parse_fragment(html);
+    let selector = Selector::parse("a").expect("Not Not Boi");
+    document
+        .select(&selector)
+        .filter_map(|n| n.value().attr("href"))
         .filter(has_no_extension)
         .filter_map(normalize_url)
         .collect::<HashSet<String>>()
