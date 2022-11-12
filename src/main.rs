@@ -1,7 +1,14 @@
-use pathcrawler::{fetch_url, get_links_from_html, parse_spell, CrawlerResult};
+use crate::robots::CrawlerConfig;
+use crate::spells::parse_spell;
+use pathcrawler::{
+    fetch_url, get_links_from_html, get_links_from_xml, replace_file, write_file, CrawlerResult,
+};
 use regex::Regex;
 use std::{collections::HashSet, time::Instant};
 use std::{thread, time};
+
+mod robots;
+mod spells;
 
 #[derive(Debug)]
 enum PageType {
@@ -14,31 +21,39 @@ enum PageType {
     Default,
 }
 
-// fn write_file(path: &str, content: &str) {
-//     fs::create_dir_all(format!("static{}", path)).unwrap();
-//     fs::write(format!("static{}/index.html", path), content).unwrap();
-// }
-
 fn main() -> CrawlerResult<()> {
     let now = Instant::now();
 
     let client = reqwest::blocking::Client::new();
-    let origin_url = "https://www.d20pfsrd.com/";
+    let robots_url = "https://www.d20pfsrd.com/robots.txt";
 
-    let body = retry_fetch(&client, origin_url).unwrap();
+    let robots_body = retry_fetch(&client, robots_url).unwrap();
     // write_file("", &body);
 
     let mut visited = HashSet::new();
-    visited.insert(origin_url.to_string());
-    let found_urls = get_links_from_html(&body);
+    visited.insert(robots_url.to_string());
+
+    let config = CrawlerConfig::new(&robots_body);
+
+    let origin_url = config.sitemap_url.unwrap_or("https://www.d20pfsrd.com");
+    let origin_is_xml = is_xml(origin_url);
+
+    let origin_body = retry_fetch(&client, origin_url).unwrap();
+
+    let found_urls = if origin_is_xml {
+        get_links_from_xml(&origin_body)
+    } else {
+        get_links_from_html(&origin_body)
+    };
     let mut new_urls = found_urls
         .difference(&visited)
         .map(|x| x.to_string())
         .collect::<HashSet<String>>();
 
+    println!("{:#?}", new_urls);
+
     let spell_regex = Regex::new(&format!(
-        r"{}magic/((all-spells/[a-z]/\w+)|(3rd-party-spells/\w+/\w+))",
-        origin_url
+        r"^https://www.d20pfsrd.com/magic/((all-spells/[^/]+/[^/]+)|(3rd-party-spells/[^/]+/[^/]+))/?$"
     ))
     .unwrap();
 
@@ -46,7 +61,14 @@ fn main() -> CrawlerResult<()> {
         let found_urls: HashSet<String> = new_urls
             .iter()
             .filter_map(|url| {
-                if !url.starts_with(&format!("{}magic", origin_url)) {
+                for path in &config.disallowed_paths {
+                    if url.contains(path) {
+                        return None;
+                    }
+                }
+                let xml_link = is_xml(url);
+                if !xml_link && !url.starts_with(&format!("https://www.d20pfsrd.com/magic")) {
+                    // Focus only on the magic pages
                     return None;
                 }
                 let page_type = if url.starts_with(&format!("{}classes/", origin_url)) {
@@ -63,23 +85,29 @@ fn main() -> CrawlerResult<()> {
                     PageType::Default
                 };
                 let fetch_start = Instant::now();
+                println!("Navigating to {}", url);
                 let body = retry_fetch(&client, url).unwrap();
                 // write_file(&url[origin_url.len() - 1..], &body);
                 if let PageType::Spell = page_type {
-                    let _spell = parse_spell(&body);
+                    let spell = parse_spell(&body);
+                    if let None = spell {
+                        match write_file("log/broken_links.txt", url) {
+                            Ok(_) => (),
+                            Err(_) => println!("Failed to write broken link {}", url),
+                        }
+                    }
                 }
-                let links = get_links_from_html(&body);
-                println!(
-                    "Visited: {} - {:?} page. Found {} links.",
-                    url,
-                    page_type,
-                    links.len()
-                );
+                let links = if xml_link {
+                    get_links_from_xml(&body)
+                } else {
+                    get_links_from_html(&body)
+                };
                 // If fetch was faster than one second, sleep for the remaining time to avoid DoS
                 let fetch_duration = fetch_start.elapsed().as_millis();
-                if fetch_start.elapsed().as_millis() < 1000 {
-                    let sleep_time: u64 = (1000 - fetch_duration).try_into().unwrap();
-                    println!("Sleeping for {}ms", sleep_time);
+                let delay_as_millis: u128 = config.crawl_delay.into();
+                let delay_as_millis = delay_as_millis * 1000;
+                if fetch_start.elapsed().as_millis() < delay_as_millis {
+                    let sleep_time: u64 = (delay_as_millis - fetch_duration).try_into().unwrap();
                     thread::sleep(time::Duration::from_millis(sleep_time));
                 }
                 Some(links)
@@ -94,11 +122,17 @@ fn main() -> CrawlerResult<()> {
             .difference(&visited)
             .map(|x| x.to_string())
             .collect::<HashSet<String>>();
+        let mut sorted_urls: Vec<&String> = new_urls.iter().collect();
+        sorted_urls.sort_by_key(|name| name.to_lowercase());
+        match replace_file(
+            "log/current_urls_object.txt",
+            &format!("{:#?}", sorted_urls),
+        ) {
+            Ok(_) => (),
+            Err(e) => println!("Failed to write URLs object {}", e),
+        };
         println!("New urls: {}", new_urls.len());
     }
-
-    println!("URLs: {:#?}", found_urls);
-    println!("{}", now.elapsed().as_secs());
 
     // let path = "spells.txt";
     // let mut output = File::create(path)?;
@@ -120,4 +154,8 @@ fn retry_fetch(client: &reqwest::blocking::Client, url: &str) -> CrawlerResult<S
         thread::sleep(time::Duration::from_secs(n));
     }
     panic!();
+}
+
+fn is_xml(url: &str) -> bool {
+    url.ends_with("xml")
 }

@@ -1,10 +1,49 @@
+use quick_xml::events::Event as XMLEvent;
+use quick_xml::reader::Reader as XMLReader;
 use reqwest::Url;
-use scraper::element_ref::Text;
+
 use scraper::{Html, Selector};
 use std::collections::HashSet;
+use std::fs;
 use std::io::Error as IoErr;
 use std::io::Read;
+use std::io::Write;
 use std::path::Path;
+
+// TODO: Sanitize
+
+pub fn write_file(path: &str, content: &str) -> std::io::Result<()> {
+    let path_result = Path::new(path);
+    if let Some(prefix) = path_result.parent() {
+        fs::create_dir_all(prefix).expect("Failed to create dir in write_file");
+    }
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    writeln!(file, "{}", content)?;
+    Ok(())
+}
+
+pub fn replace_file(path: &str, content: &str) -> std::io::Result<()> {
+    let path_result = Path::new(path);
+    if let Some(prefix) = path_result.parent() {
+        fs::create_dir_all(prefix).expect("Failed to create dir in replace_file");
+    }
+    let mut file = if path_result.exists() {
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)?
+    } else {
+        fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)?
+    };
+    writeln!(file, "{}", content)?;
+    Ok(())
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -47,58 +86,77 @@ pub fn fetch_url(client: &reqwest::blocking::Client, url: &str) -> CrawlerResult
     Ok(body)
 }
 
-// struct Spell {
-//     name: &str,
-//     description: &str,
-//     school: &str,
-//     subschool: &str,
-//     descriptors: Vec<&str>,
-// }
+pub fn get_links_from_xml(xml: &str) -> HashSet<String> {
+    let mut reader = XMLReader::from_str(xml);
+    reader.trim_text(true);
 
-// pub fn parse_class_spells() -> Vec<Spell> {
+    let mut urls = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut reading_loc = false;
 
-// }
-
-fn parse_spell_metadata(mut iter: Text) -> () {
-    while let Some(text_value) = iter.next() {
-        println!("Metadata: {}", text_value);
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Err(e) => panic!(
+                "Error reading XML page at position {} {:#?}",
+                reader.buffer_position(),
+                e
+            ),
+            Ok(XMLEvent::Eof) => break,
+            Ok(XMLEvent::Start(e)) if e.name().as_ref() == b"loc" => reading_loc = true,
+            Ok(XMLEvent::End(e)) if e.name().as_ref() == b"loc" => reading_loc = false,
+            Ok(XMLEvent::Text(e)) if reading_loc => urls.push(e.unescape().unwrap().into_owned()),
+            _ => (),
+        }
     }
-    ()
+
+    let urls = urls
+        .into_iter()
+        .filter(|s| allowed_extension(&&s[..]))
+        .filter_map(|s| normalize_url(&&s[..]))
+        .collect::<HashSet<String>>();
+
+    // let document = Html::parse_fragment(xml);
+    // let anchor_tags: Vec<&str> = document.tree.values().fold(vec![], |mut a, b| {
+    //     if let Node::Element(el) = b {
+    //         let tag_name = &(*el.name.local);
+    //         if tag_name.eq("loc") {
+    //             let text = b.as_text();
+    //             if text.is_some() {
+    //                 let text = &(**text.unwrap());
+    //                 println!("Text: {}", text);
+    //             }
+    //         }
+    //     }
+    //     a
+    // });
+    // println!("Anchor tags: {:#?}", anchor_tags);
+    urls
 }
 
-pub fn parse_spell(html: &str) -> () {
-    let document = Html::parse_fragment(html);
-    let name_selector = Selector::parse("#article-content > h1").expect("Basic child boi");
-    let spell_name = document.select(&name_selector).next().unwrap().text().next().unwrap();
-    println!("Spell Name: {}", spell_name);
-    let spell_metadata_selector = Selector::parse("#article-content > p:first-of-type").unwrap();
-    parse_spell_metadata(document.select(&spell_metadata_selector).next().unwrap().text());
-    // let (spell_school, spell_subschool, spell_descriptors) = parse_spell_metadata(document.select(&spell_metadata_selector).next()?.text());
-    // let document = Document::from(html);
-    // let spell_name = document
-    //     .find(Child(Class("article-content"), Name("h1")))
-    //     .into_selection()
-    //     .first();
-
-    // if let Some(name) = spell_name {
-    //     println!("Spell name: {}", name.text());
-    // }
-    ()
-}
+/* ['', '<div class="content-right-videobox hidden-xs hidden-sm">', '<div style="width:180px;max-width:180px;margin-lef…n-right:auto;" class="ogn-npa-container videoad">', '<div class="ogn-npa ogn-npa-video" id="nitropay-d20pfsrd-video"></div>', '</div>\x3Cscript type="text/javascript">', 'ognCreateVideoAdSpot("nitropay-d20pfsrd-video");', '\x3C/script>    </div>', '<div class="breadcrumbs">', '<a parentid="52278" href="https://www.d20pfsrd.com…                                           </div>', '<h1>Spellblight Jinx</h1>', '<p><b>School</b> <a href="https://www.d20pfsrd.com…d.com/classes/base-classes/witch">witch</a> 5</p>', '<p class="divider">CASTING</p>', '<p><b>Casting Time</b> 1 <a href="https://www.d20p…tandard action</a><br> <b>Components</b> V, S</p>', '<p class="divider">EFFECT</p>', '<p><b>Range</b> <a href="https://www.d20pfsrd.com/…Will</a> negates; <b>Spell Resistance</b> yes</p>', '<p class="divider">DESCRIPTION</p>', '<p>You inflict a curse similar to the spell burn s…ons#TOC-Staggered">staggered</a> for a round.</p>', '<p>Unlike with the spell burn spellblight, the bur…eal</a>, violet flame surrounding the caster.</p>', '<div class="section15">', '<div>Section 15: Copyright Notice</div>', '<div>', '<p><a href="https://www.amazon.com/gp/product/1601…n T. Helt, Thurston Hillman, and Ron Lundeen.</p>', '</div>', '</div>                                            …              \x3C!--div style="clear:both"></div-->', ''] */
 
 pub fn get_links_from_html(html: &str) -> HashSet<String> {
     let document = Html::parse_fragment(html);
     let selector = Selector::parse("a").expect("Not Not Boi");
-    document
+    let result = document
         .select(&selector)
-        .filter_map(|n| n.value().attr("href"))
-        .filter(has_no_extension)
+        .filter_map(|el| el.value().attr("href"))
+        .filter(allowed_extension)
         .filter_map(normalize_url)
-        .collect::<HashSet<String>>()
+        .collect::<HashSet<String>>();
+    result
 }
 
-fn has_no_extension(url: &&str) -> bool {
-    Path::new(url).extension().is_none()
+fn allowed_extension(url: &&str) -> bool {
+    let ext = Path::new(url).extension();
+    if let Some(s) = ext {
+        match s.to_str() {
+            Some("xml") => true,
+            _ => false,
+        }
+    } else {
+        true
+    }
 }
 
 fn normalize_url(url: &str) -> Option<String> {
